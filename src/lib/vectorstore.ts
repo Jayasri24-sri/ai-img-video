@@ -1,116 +1,118 @@
-// Simple in-memory vector store as replacement for ChromaDB
-// For production, you would use Cloudflare Vectorize with Workers or another vector DB
+// Simple file metadata store
+// Files are stored in R2, we just track metadata here
 
-interface VectorItem {
+import fs from 'fs';
+import path from 'path';
+
+export interface FileItem {
   id: string;
-  embedding: number[];
-  document: string;
-  metadata: {
-    type: string;
-    filename: string;
-    content: string;
-    timestamp: string;
-  };
+  type: 'text' | 'image' | 'video' | 'pdf';
+  filename: string;
+  mediaUrl?: string; // For R2 files: stores R2 key (e.g., "images/123.png"). Legacy: may contain full URL.
+  textContent?: string; // For text files
+  timestamp: string;
 }
 
-class VectorStore {
-  private items: VectorItem[] = [];
+class FileStore {
+  private items: FileItem[] = [];
+  private storageFile: string;
 
-  async add(item: VectorItem): Promise<void> {
-    this.items.push(item);
-  }
+  constructor() {
+    // Store data in project root's .vector-store directory
+    const storageDir = path.join(process.cwd(), '.vector-store');
+    this.storageFile = path.join(storageDir, 'files.json');
 
-  async query(queryEmbedding: number[], limit: number = 5): Promise<{
-    ids: string[];
-    documents: string[];
-    metadatas: any[];
-    distances: number[];
-  }> {
-    // Calculate cosine similarity for each item
-    const results = this.items.map(item => ({
-      ...item,
-      distance: this.cosineSimilarity(queryEmbedding, item.embedding)
-    }));
-
-    // Sort by similarity (higher is better)
-    results.sort((a, b) => b.distance - a.distance);
-
-    // Take top N results
-    const topResults = results.slice(0, limit);
-
-    return {
-      ids: topResults.map(r => r.id),
-      documents: topResults.map(r => r.document),
-      metadatas: topResults.map(r => r.metadata),
-      distances: topResults.map(r => 1 - r.distance), // Convert to distance (lower is better)
-    };
-  }
-
-  async getAll(limit: number = 50): Promise<{
-    ids: string[];
-    documents: string[];
-    metadatas: any[];
-  }> {
-    const recentItems = this.items.slice(-limit).reverse();
-
-    return {
-      ids: recentItems.map(item => item.id),
-      documents: recentItems.map(item => item.document),
-      metadatas: recentItems.map(item => item.metadata),
-    };
-  }
-
-  private cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
-
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-      dotProduct += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(storageDir)) {
+      fs.mkdirSync(storageDir, { recursive: true });
     }
 
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    // Load existing data
+    this.loadFromFile();
+  }
+
+  private loadFromFile(): void {
+    try {
+      if (fs.existsSync(this.storageFile)) {
+        const data = fs.readFileSync(this.storageFile, 'utf-8');
+        this.items = JSON.parse(data);
+        console.log(`Loaded ${this.items.length} files from store`);
+      }
+    } catch (error) {
+      console.error('Failed to load file store:', error);
+      this.items = [];
+    }
+  }
+
+  private saveToFile(): void {
+    try {
+      fs.writeFileSync(this.storageFile, JSON.stringify(this.items, null, 2));
+    } catch (error) {
+      console.error('Failed to save file store:', error);
+    }
+  }
+
+  async add(item: FileItem): Promise<void> {
+    // Reload from file first to get latest data
+    this.loadFromFile();
+    this.items.push(item);
+    this.saveToFile();
+    console.log(`File added. Total files: ${this.items.length}`);
+  }
+
+  async getAll(limit: number = 50): Promise<FileItem[]> {
+    // Always reload from file to ensure we have the latest data
+    this.loadFromFile();
+    console.log(`Getting all files. Total: ${this.items.length}`);
+    return this.items.slice(-limit).reverse();
+  }
+
+  async getById(id: string): Promise<FileItem | undefined> {
+    return this.items.find(item => item.id === id);
+  }
+
+  async delete(id: string): Promise<boolean> {
+    // Reload from file first to get latest data
+    this.loadFromFile();
+    const initialLength = this.items.length;
+    this.items = this.items.filter(item => item.id !== id);
+
+    if (this.items.length < initialLength) {
+      this.saveToFile();
+      console.log(`File deleted. Remaining files: ${this.items.length}`);
+      return true;
+    }
+
+    return false;
   }
 }
 
 // Singleton instance
-let vectorStore: VectorStore | null = null;
+let fileStore: FileStore | null = null;
 
-export function getVectorStore(): VectorStore {
-  if (!vectorStore) {
-    vectorStore = new VectorStore();
+export function getFileStore(): FileStore {
+  if (!fileStore) {
+    fileStore = new FileStore();
   }
-  return vectorStore;
+  return fileStore;
 }
 
-export async function addToVectorStore(
-  id: string,
-  embedding: number[],
-  document: string,
-  metadata: {
-    type: string;
-    filename: string;
-    content: string;
-    timestamp: string;
-  }
-): Promise<void> {
-  const store = getVectorStore();
-  await store.add({ id, embedding, document, metadata });
+export async function addFile(item: FileItem): Promise<void> {
+  const store = getFileStore();
+  await store.add(item);
 }
 
-export async function queryVectorStore(
-  queryEmbedding: number[],
-  limit: number = 5
-) {
-  const store = getVectorStore();
-  return store.query(queryEmbedding, limit);
-}
-
-export async function getAllFromVectorStore(limit: number = 50) {
-  const store = getVectorStore();
+export async function getAllFiles(limit: number = 50): Promise<FileItem[]> {
+  const store = getFileStore();
   return store.getAll(limit);
+}
+
+export async function getFileById(id: string): Promise<FileItem | undefined> {
+  const store = getFileStore();
+  return store.getById(id);
+}
+
+export async function deleteFile(id: string): Promise<boolean> {
+  const store = getFileStore();
+  return store.delete(id);
 }

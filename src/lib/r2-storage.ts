@@ -1,4 +1,5 @@
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const R2_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || '';
@@ -40,16 +41,30 @@ export async function uploadToR2(
 
     await r2Client.send(command);
 
-    // Return public URL
-    // Option 1: Using R2.dev subdomain (you need to enable public access)
-    const publicUrl = `https://pub-${R2_ACCOUNT_ID}.r2.dev/${key}`;
+    console.log('Uploaded to R2:', { key });
 
-    console.log('Uploaded to R2:', { key, publicUrl });
-
-    return publicUrl;
+    // Return the R2 key (not a URL) - we'll generate presigned URLs on demand
+    return key;
   } catch (error) {
     console.error('Error uploading to R2:', error);
     throw new Error(`Failed to upload to R2: ${error}`);
+  }
+}
+
+// Generate a presigned URL that's valid for 1 hour
+export async function getPresignedUrl(key: string): Promise<string> {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: R2_BUCKET_NAME,
+      Key: key,
+    });
+
+    // Generate presigned URL valid for 1 hour
+    const presignedUrl = await getSignedUrl(r2Client, command, { expiresIn: 3600 });
+    return presignedUrl;
+  } catch (error) {
+    console.error('Error generating presigned URL:', error);
+    throw new Error(`Failed to generate presigned URL: ${error}`);
   }
 }
 

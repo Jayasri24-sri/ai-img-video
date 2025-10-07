@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { addToVectorStore } from '@/lib/vectorstore';
-import {
-  analyzeWithCloudflare,
-  analyzeImageWithCloudflare,
-  generateEmbeddingWithCloudflare,
-} from '@/lib/cloudflare-ai';
+import { addFile } from '@/lib/vectorstore';
 import { uploadToR2 } from '@/lib/r2-storage';
 
 export async function POST(request: NextRequest) {
@@ -17,44 +12,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
-    let textDescription: string;
-    let mediaUrl: string | null = null;
-    let embedding: number[];
+    const id = `${type}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    let mediaUrl: string | undefined; // Note: For R2 files, this stores the R2 key, not a URL
+    let textContent: string | undefined;
 
-    // Handle different file types
+    // Handle different file types - just store, don't analyze yet
     if (type === 'text') {
-      // Text: Just read content, no R2 upload needed
-      const content = await file.text();
-      textDescription = await analyzeWithCloudflare(content, 'text');
-      embedding = await generateEmbeddingWithCloudflare(textDescription);
+      // Text: Read content and store it
+      textContent = await file.text();
     } else if (type === 'image') {
-      // Image: Upload to R2, generate text description, embed the description
+      // Image: Upload to R2 and store the key
       console.log('Uploading image to R2...');
       mediaUrl = await uploadToR2(file, 'images');
-      console.log('Image uploaded to:', mediaUrl);
-
-     // Generate text description from image - pass ArrayBuffer directly
-      const arrayBuffer = await file.arrayBuffer();
-      textDescription = await analyzeImageWithCloudflare(arrayBuffer);
-
-      // Create embedding from the TEXT DESCRIPTION only
-      embedding = await generateEmbeddingWithCloudflare(textDescription);
+      console.log('Image uploaded with key:', mediaUrl);
     } else if (type === 'video') {
-      // Video: Upload to R2, generate text description, embed the description
+      // Video: Upload to R2 and store the key
       console.log('Uploading video to R2...');
       mediaUrl = await uploadToR2(file, 'videos');
-      console.log('Video uploaded to:', mediaUrl);
-
-      // Generate text description for video
-      textDescription = `Video uploaded: ${file.name}. Size: ${Math.round(file.size / 1024 / 1024)}MB. URL: ${mediaUrl}`;
-
-      // For now, use basic description. In production, you might want to:
-      // 1. Extract frames from video
-      // 2. Analyze frames with vision model
-      // 3. Generate comprehensive description
-
-      // Create embedding from the TEXT DESCRIPTION only
-      embedding = await generateEmbeddingWithCloudflare(textDescription);
+      console.log('Video uploaded with key:', mediaUrl);
     } else {
       return NextResponse.json(
         { error: 'Invalid file type' },
@@ -62,34 +37,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Store in vector store with metadata
-    const id = `${type}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    await addToVectorStore(
+    // Store file metadata (mediaUrl contains R2 key for images/videos)
+    await addFile({
       id,
-      embedding, // Embedding is ALWAYS from text
-      textDescription, // Store the text description as document
-      {
-        type,
-        filename: file.name,
-        content: textDescription.substring(0, 1000), // Text description
-        timestamp: new Date().toISOString(),
-        // Store media URLs in metadata (for images/videos)
-        ...(mediaUrl && {
-          media_url: mediaUrl,
-          video_url: type === 'video' ? mediaUrl : undefined,
-          image_url: type === 'image' ? mediaUrl : undefined,
-        }),
-      }
-    );
+      type: type as 'text' | 'image' | 'video' | 'pdf',
+      filename: file.name,
+      mediaUrl,
+      textContent,
+      timestamp: new Date().toISOString(),
+    });
 
     return NextResponse.json({
       success: true,
       id,
-      analysis: textDescription,
       type,
       filename: file.name,
-      media_url: mediaUrl,
+      analysis: 'File uploaded successfully. You can now search!',
     });
   } catch (error) {
     console.error('Upload error:', error);

@@ -73,34 +73,55 @@ export async function analyzeImageWithCloudflare(
   arrayBuffer: ArrayBuffer
 ): Promise<string> {
   try {
+    console.log(`[analyzeImageWithCloudflare] Starting image analysis, buffer size: ${arrayBuffer.byteLength} bytes`);
+
     // Convert ArrayBuffer to Uint8Array then to regular array
     const uint8Array = new Uint8Array(arrayBuffer);
     const imageArray = Array.from(uint8Array);
 
-    const result = await callCloudflareAI(VISION_MODEL, {
-      prompt: 'Describe this image in detail. What do you see? What are the key elements and insights? Provide a comprehensive analysis.',
+    console.log(`[analyzeImageWithCloudflare] Converted to array, length: ${imageArray.length}`);
+
+    const payload = {
+      prompt: 'Describe this image in detail. What do you see? What are the key elements, text, and insights? Provide a comprehensive analysis.',
       image: imageArray,
+    };
+
+    console.log(`[analyzeImageWithCloudflare] Calling vision model: ${VISION_MODEL}`);
+
+    const result = await callCloudflareAI(VISION_MODEL, payload);
+
+    console.log('[analyzeImageWithCloudflare] Vision API response:', {
+      success: result.success,
+      hasDescription: !!result.result?.description,
+      hasResponse: !!result.result?.response,
+      errors: result.errors,
+      fullResult: JSON.stringify(result).substring(0, 500)
     });
 
-    console.log('Vision result:', JSON.stringify(result).substring(0, 300));
-
     if (!result.success) {
-      throw new Error(`Vision analysis failed: ${JSON.stringify(result.errors)}`);
+      const errorMsg = result.errors && result.errors.length > 0
+        ? JSON.stringify(result.errors)
+        : 'Unknown error';
+      throw new Error(`Vision analysis failed: ${errorMsg}`);
     }
 
-    // LLaVA returns response in result.description
+    // LLaVA returns response in result.description or result.response
     if (result.result.description) {
+      console.log(`[analyzeImageWithCloudflare] Success - using description: ${result.result.description.substring(0, 100)}...`);
       return result.result.description;
     }
 
     if (result.result.response) {
+      console.log(`[analyzeImageWithCloudflare] Success - using response: ${result.result.response.substring(0, 100)}...`);
       return result.result.response;
     }
 
-    throw new Error('Invalid response format from Cloudflare AI vision model');
+    console.error('[analyzeImageWithCloudflare] Invalid response format:', JSON.stringify(result));
+    throw new Error('Invalid response format from Cloudflare AI vision model - no description or response field found');
   } catch (error) {
-    console.error('Error analyzing image with Cloudflare AI:', error);
-    throw new Error(`Failed to analyze image with Cloudflare AI: ${error}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[analyzeImageWithCloudflare] Error:', errorMessage);
+    throw new Error(`Failed to analyze image: ${errorMessage}`);
   }
 }
 
